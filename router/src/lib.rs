@@ -113,8 +113,23 @@ pub async fn run(
     // Load config
     let config_path = model_root.join("config.json");
     let config = fs::read_to_string(config_path).context("`config.json` not found")?;
-    let config: ModelConfig =
+    let mut config: ModelConfig =
         serde_json::from_str(&config).context("Failed to parse `config.json`")?;
+
+    // NOTE: Multimodal models such as `google/embeddinggemma-2` define these under `text_config`
+    if let Some(text_config) = &config.text_config {
+        config.max_position_embeddings = config
+            .max_position_embeddings
+            .or(text_config.max_position_embeddings);
+        config.pad_token_id = config.pad_token_id.or(text_config.pad_token_id);
+    }
+
+    // NOTE: `embedding_gemma2` advertises `max_position_embeddings=262144` in its `config.json`,
+    // but it's only trained with up to 8192 tokens, and its Sentence Transformers config doesn't
+    // define `max_seq_length`, so cap it to that
+    if config.model_type == "embedding_gemma2" {
+        config.max_position_embeddings = config.max_position_embeddings.map(|v| v.min(8192));
+    }
 
     // Set model type from config
     let backend_model_type = get_backend_model_type(&config, &model_root, pooling)?;
@@ -210,10 +225,11 @@ pub async fn run(
         },
     };
 
-    let base_input_length = match st_config {
-        Some(config) => config.max_seq_length,
+    // NOTE: Sentence Transformers v6 configs may not define `max_seq_length`
+    let base_input_length = match st_config.and_then(|config| config.max_seq_length) {
+        Some(max_seq_length) => max_seq_length,
         None => {
-            tracing::warn!("Could not find a Sentence Transformers config");
+            tracing::warn!("Could not find `max_seq_length` in a Sentence Transformers config");
             max_position_embeddings - position_offset
         }
     };
@@ -273,8 +289,12 @@ pub async fn run(
 
     // NOTE: `gemma3_text` won't support Float16 but only Float32, given that with `candle-cuda`
     // feature, the default `Dtype::Float16` this overrides that to prevent issues when running a
-    // `gemma3_text` model without specifying a `--dtype`
-    let dtype = if dtype.is_none() && config.model_type == "gemma3_text" {
+    // `gemma3_text` (or `embedding_gemma2`) model without specifying a `--dtype`
+    let dtype = if dtype.is_none()
+        && matches!(
+            config.model_type.as_str(),
+            "gemma3_text" | "embedding_gemma2"
+        ) {
         DType::Float32
     } else {
         dtype.unwrap_or_default()
@@ -477,17 +497,31 @@ pub struct ModelConfig {
     pub max_position_embeddings: Option<usize>,
     #[serde(default)]
     pub pad_token_id: Option<usize>,
+    #[serde(default)]
+    pub text_config: Option<TextConfig>,
     pub id2label: Option<HashMap<String, String>>,
     pub label2id: Option<HashMap<String, usize>>,
     pub auto_map: Option<HashMap<String, String>>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TextConfig {
+    pub max_position_embeddings: Option<usize>,
+    pub pad_token_id: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PoolConfig {
+    // NOTE: Legacy format, with one boolean flag per pooling mode
+    #[serde(default)]
     pooling_mode_cls_token: bool,
+    #[serde(default)]
     pooling_mode_mean_tokens: bool,
     #[serde(default)]
     pooling_mode_lasttoken: bool,
+    // NOTE: Sentence Transformers v6 format, with a single `pooling_mode` string
+    #[serde(default)]
+    pooling_mode: Option<String>,
 }
 
 impl TryFrom<PoolConfig> for Pool {
@@ -503,13 +537,19 @@ impl TryFrom<PoolConfig> for Pool {
         if config.pooling_mode_lasttoken {
             return Ok(Pool::LastToken);
         }
+        match config.pooling_mode.as_deref() {
+            Some("cls") => return Ok(Pool::Cls),
+            Some("mean") => return Ok(Pool::Mean),
+            Some("lasttoken") => return Ok(Pool::LastToken),
+            _ => {}
+        }
         Err(anyhow!("Pooling config {config:?} is not supported"))
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct STConfig {
-    pub max_seq_length: usize,
+    pub max_seq_length: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
