@@ -32,6 +32,9 @@ mod flash_bert;
 mod flash_distilbert;
 
 #[cfg(feature = "cuda")]
+mod flash_embedding_gemma2;
+
+#[cfg(feature = "cuda")]
 mod flash_gte;
 
 #[cfg(feature = "cuda")]
@@ -78,6 +81,9 @@ pub use flash_bert::FlashBertModel;
 
 #[cfg(feature = "cuda")]
 pub use flash_distilbert::FlashDistilBertModel;
+
+#[cfg(feature = "cuda")]
+pub use flash_embedding_gemma2::FlashEmbeddingGemma2Model;
 
 #[cfg(feature = "cuda")]
 pub use flash_gte::FlashGTEModel;

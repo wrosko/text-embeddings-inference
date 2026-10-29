@@ -30,9 +30,9 @@ use crate::models::{
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
-    FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
-    FlashJinaCodeBertModel, FlashMistralModel, FlashModernBertModel, FlashNomicBertModel,
-    FlashQwen2Model, FlashQwen3Model,
+    FlashBertModel, FlashDistilBertModel, FlashEmbeddingGemma2Model, FlashGTEModel,
+    FlashJinaBertModel, FlashJinaCodeBertModel, FlashMistralModel, FlashModernBertModel,
+    FlashNomicBertModel, FlashQwen2Model, FlashQwen3Model,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -321,7 +321,7 @@ impl CandleBackend {
                     DistilBertModel::load(vb, &config, model_type).s()?,
                 ))
             }
-            (Config::EmbeddingGemma2(config), _) => {
+            (Config::EmbeddingGemma2(config), Device::Cpu | Device::Metal(_)) => {
                 if !matches!(dtype, DType::F32 | DType::F16) {
                     Err(BackendError::Start(
                         "EmbeddingGemma2 is only supported in fp32 or fp16 precision".to_string(),
@@ -462,6 +462,24 @@ impl CandleBackend {
                     tracing::info!("Starting DistilBertModel model on {:?}", device);
                     Ok(Box::new(
                         DistilBertModel::load(vb, &config, model_type).s()?,
+                    ))
+                }
+            }
+            #[cfg(feature = "cuda")]
+            (Config::EmbeddingGemma2(config), Device::Cuda(_)) => {
+                if !matches!(dtype, DType::F32 | DType::F16) {
+                    Err(BackendError::Start(
+                        "EmbeddingGemma2 is only supported in fp32 or fp16 precision".to_string(),
+                    ))
+                } else if dtype == DType::F16 && use_flash_attn(&[FlashAttn::V2]) {
+                    tracing::info!("Starting FlashEmbeddingGemma2 model on {:?}", device);
+                    Ok(Box::new(
+                        FlashEmbeddingGemma2Model::load(vb, &config, model_type).s()?,
+                    ))
+                } else {
+                    tracing::info!("Starting EmbeddingGemma2 model on {:?}", device);
+                    Ok(Box::new(
+                        EmbeddingGemma2Model::load(vb, &config, model_type).s()?,
                     ))
                 }
             }
